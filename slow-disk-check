@@ -1,0 +1,248 @@
+#!/bin/sh
+# polyglot for gawk version detection
+true + /; gawk --version | grep "GNU Awk" | egrep -q "GNU Awk [^,]+, API: (1\.[1-9]|2\.)"; if [ "$?" -ne 0 ]; then echo "Unsupported gawk version; Requires API 1.1+" && exit 1; fi ; false / {}
+true + /; exec -a $(basename "$0") gawk -f "$0" -- "$@"; exit 1; / {}
+# awk script starts here
+
+@load "filefuncs"
+@load "time"
+
+function showArgHelp() {
+	print "Usage: " ARGV[0] " [options] device_to_test"
+	print "Options:"
+	print "  -h --help   shows this usage help"
+	print "  -f sizeMB   when reading fast, skip this many MB; default=" FASTSTEP
+	print "  -t ms       read timeout in ms; default=" TIMEOUT
+	print 
+	exit 1
+}
+
+function parseArgs(     ARG, STATINFO, CMD, RET) {
+	for(i=1; i<ARGC; i++) {
+		ARG=ARGV[i]
+		if (ARG ~ /^-h|^--help/) {
+			showArgHelp()
+		} else if (ARG == "-t") {
+			TIMEOUT=ARGV[i+1]
+			++i
+		} else if (ARG == "-f") {
+			FASTSTEP=ARGV[i+1]
+			++i
+		} else if (ARG == "") {
+			print "empty arg"
+		} else if (stat(ARG, STATINFO) < 0) {
+			print "FATAL: invalid argument or file not found: " ARG > "/dev/stderr"
+			print
+			showArgHelp()
+		} else if (STATINFO["type"] != "blockdev") {
+			print "FATAL: invalid block device: " ARG > "/dev/stderr"
+			exit 1
+		} else {
+			CMD="test -r " ARG " ; echo $?"
+			CMD | getline RET
+			close(CMD)
+			if (RET != 0) {
+				print "FATAL: unable to read block device: " ARG > "/dev/stderr"
+				exit 1
+			}
+			DEVICE=ARG
+		}
+		ARG=""
+	}
+	if (DEVICE == "") {
+		print "FATAL: no block device specified" > "/dev/stderr"
+		print
+		showArgHelp()
+	}
+	DEVICE_SIZE=getDevSizeMB(DEVICE)
+	
+}
+
+function getDevSizeMB(DEVICE     ,CMD,RET) {
+	CMD="lsblk -rbdno SIZE " DEVICE
+	CMD | getline RET
+	close(CMD)
+	return int((0 + RET) / 1048576)
+}
+
+function testDeviceAt(ADDR, READSIZE, INFO     ,CMD,RET,STARTTS,ENDTS,m) {
+	CMD="2>&1 dd if=" DEVICE " of=/dev/null bs=1M count=" READSIZE " skip=" ADDR " iflag=direct ; echo $?"
+	STARTTS=gettimeofday()
+	CMD | getline RET
+	while (match(RET, /^([0-9]+\+[0-9]+ records \w+)$/, m)) {
+		CMD | getline RET
+	}
+	ENDTS=gettimeofday()
+	close(CMD)
+	ET=ENDTS-STARTTS
+	INFO["elapsed"]=ET
+	INFO["rate"]=READSIZE/ET
+	if (match(RET, /^1048576 bytes (\(.*\) )?copied, (.*)$/, m)) {
+		RET=m[2]
+	}
+	return RET
+}
+
+function updateAvgRate(RATE) {
+	if (AVGRATE == -1) {
+		MINRATE=RATE
+		MAXRATE=RATE
+		AVGRATE=RATE
+	} else if (RATE < MINRATE) {
+		if (((MINRATE-RATE) / MINRATE) > 0.30) {
+			return 1
+		}
+		MINRATE=RATE
+		AVGRATE=int((MINRATE + MAXRATE) / 2)
+	} else if (RATE > MAXRATE) {
+		MAXRATE=RATE
+		AVGRATE=int((MINRATE + MAXRATE) / 2)
+	}
+	return 0
+}
+
+function updateAndCheckRate(INFO     ,FLAG) {
+	FLAG=updateAvgRate(INFO["rate"])
+	if (FLAG == 0 && INFO["elapsed"] > TIMEOUT) {
+		FLAG=-1
+	}
+	return FLAG
+}
+
+function testDeviceBinary(STARTMB, ENDMB, READSIZE     ,ADDR,RET,INFO,FLAG) {
+	# we know the exact middle is slow, but we want to break that down
+	ADDR=int((STARTMB+ENDMB) / 2)
+	printf "\r(B) %d-%d -> %d \n", STARTMB, ENDMB, ADDR
+	if (ADDR == STARTMB) {
+		return ENDMB;
+	}
+	RET=testDeviceAt(ADDR, READSIZE, INFO)
+	printf "\r(BS) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s \n", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+	FLAG=updateAndCheckRate(INFO)
+	if (FLAG != 0) {
+		return testDeviceBinary(STARTMB, ADDR, READSIZE)
+	} else {
+		return testDeviceBinary(ADDR, ENDMB, READSIZE)
+	}
+}
+
+function testDeviceFindSlowEnd(STARTMB, ENDMB, READSIZE     ,SKIP,ADDR,RET,INFO,INFOLAST,FLAG) {
+	# we know the exact middle is slow, but we want to break that down
+	print "testDeviceFindSlowEnd not yet implemented"
+	
+	printf "(E) %d-%d\n", STARTMB, ENDMB
+	
+	SKIP=1
+	ADDR=STARTMB
+	
+	# find the next non-slow sector in exponentially increasing steps
+	do {
+		ADDR=ADDR+SKIP
+		if (ADDR > ENDMB) {
+			ADDR=ENDMB
+		}
+		RET=testDeviceAt(ADDR, READSIZE, INFO)
+		printf "\r(LS) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s \n", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+		FLAG=updateAndCheckRate(INFO)
+		SKIP *= 2
+		if (SKIP > FASTSTEP) {
+			SKIP=FASTSTEP
+		}
+	} while (FLAG != 0 && ADDR < ENDMB)
+	
+	printf "\r(LSOK) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s \n", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+	
+	ENDMB=ADDR
+	
+	# now we subdivide that to ensure we have the actual end
+	ADDR=int((STARTMB+ENDMB) / 2)
+	if (ADDR == STARTMB) {
+		return ADDR;
+	}
+	RET=testDeviceAt(ADDR, READSIZE, INFO)
+	printf "\r(BSE) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s \n", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+	FLAG=updateAndCheckRate(INFO)
+	if (FLAG != 0) {
+		return testDeviceFindSlowEnd(ADDR, ENDMB, READSIZE)
+	} else {
+		printf "(BR-F) %d-%d\n", STARTMB, ADDR
+		return testDeviceFindSlowEnd(STARTMB, ADDR, READSIZE)
+	}
+}
+
+function retestDeviceAt(ADDR, READSIZE, ENDMB     ,INFO,RET,FLAG) {
+	printf "\r!!! slow read detected; retrying in 2 seconds... "
+	sleep(2)
+	RET=testDeviceAt(ADDR, READSIZE, INFO)
+	FLAG=updateAndCheckRate(INFO)
+	if (FLAG != 0) {
+		return 1
+	} else {
+		return 0
+	}
+}
+
+function testDeviceLinear(STARTMB, ENDMB     ,ADDR,READSIZE,RET,INFO,SLOWSTARTMB,SLOWENDMB,FLAG) {
+	READSIZE=1
+	for(ADDR=STARTMB; ADDR<=ENDMB; ) {
+		RET=testDeviceAt(ADDR, READSIZE, INFO)
+		printf "\r(%2d%%) %7d MB: %d ms = %d MB/s, avg=%d MB/s: %s ", (100 * ADDR / ENDMB), ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+		FLAG=updateAvgRate(INFO["rate"])
+		if (FLAG != 0 || INFO["elapsed"] > TIMEOUT) {
+			FLAG=retestDeviceAt(ADDR, READSIZE, ENDMB)
+			if (FLAG == 1) {
+				printf "\n!!! slow read detected; switching to binary search\n"
+				SLOWSTARTMB=testDeviceBinary((ADDR-FASTSTEP), ADDR, READSIZE)
+				printf "\r(%2d%%) SLOW STARTING AT: %d MB \n", (100 * ADDR / ENDMB), SLOWSTARTMB
+				
+				SLOWENDMB=testDeviceFindSlowEnd(SLOWSTARTMB, ENDMB, READSIZE)
+				printf "\r(%2d%%) SLOW ENDING AT: %d MB \n", (100 * ADDR / ENDMB), SLOWENDMB
+				
+				if (SLOWSTARTMB == SLOWENDMB) {
+					printf "\n(%2d%%) SLOW: at %d MB \n", (100 * ADDR / ENDMB), SLOWSTARTMB
+					ADDR += 1
+				} else {
+					printf "\r(%2d%%) SLOW FROM: %d MB to %d MB \n", (100 * ADDR / ENDMB), SLOWSTARTMB, SLOWENDMB
+					print "DEBUG: Sleeping for 10 seconds..."
+					sleep(10)
+					ADDR = SLOWENDMB + 1
+				}
+			}
+		} else {
+			ADDR += FASTSTEP
+		}
+	}
+	print
+}
+
+function testDevice(STARTMB, ENDMB) {
+	testDeviceLinear(STARTMB, ENDMB)
+}
+
+BEGIN {
+	DEVICE=""
+	TIMEOUT=100
+	FASTSTEP=1000
+	STARTMB=0
+	ENDMB=0
+	parseArgs()
+
+	TIMEOUT=TIMEOUT / 1000
+	MINRATE=-1
+	MAXRATE=-1
+	AVGRATE=-1
+
+	if (ENDMB == 0) {
+		ENDMB=DEVICE_SIZE
+	} else if (ENDMB < STARTMB) {
+		print "FATAL: ENDMB < STARTMB; ENDMB=" ENDMB ", STARTMB=" STARTMB > "/dev/stderr"
+		exit 1
+	} else if (ENDMB > DEVICE_SIZE) {
+		print "FATAL: ENDMB > DEVICE_SIZE; ENDMB=" ENDMB ", DEVICE_SIZE=" DEVICE_SIZE > "/dev/stderr"
+		exit 1
+	}
+	testDevice(STARTMB, ENDMB)
+
+	exit 0
+}
+
