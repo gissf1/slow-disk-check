@@ -206,7 +206,7 @@ function testDevice(STARTMB, ENDMB) {
 BEGIN {
 	DEVICE=""
 	TIMEOUT=100
-	FASTSTEP=1000
+	FASTSTEP=100
 	STARTMB=0
 	ENDMB=0
 	parseArgs()
