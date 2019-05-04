@@ -1,0 +1,55 @@
+#!/bin/sh
+# polyglot for gawk version detection
+true + /; gawk --version | grep "GNU Awk" | egrep -q "GNU Awk [^,]+, API: (1\.[1-9]|2\.)"; if [ "$?" -ne 0 ]; then echo "Unsupported gawk version; Requires API 1.1+" && exit 1; fi ; false / {}
+true + /; exec -a $(basename "$0") gawk -f "$0" -- "$@"; exit 1; / {}
+# awk script starts here
+
+@load "filefuncs"
+@load "time"
+
+function showArgHelp() {
+	print "Usage: " ARGV[0] " [options] device_to_test"
+	print "Options:"
+	print "  -h --help   shows this usage help"
+	print 
+	exit 1
+}
+
+function parseLine(LINE     ,m) {
+	if (match(LINE, /^\( *[0-9]+%\) SLOW: +([0-9]+) MB - +([0-9]+) MB \(([0-9]+) MB\)/, m)) {
+		print m[1] "\t" m[2] > ( FILENAME ".slowranges" )
+		return
+	}
+	if (match(LINE, /^\((SLOW| *[0-9]+%)\) +([0-9]+) MB: ([0-9]+) ms =[^:]+: ([.0-9]+) s,/, m)) {
+		print m[2] "\t" m[3] "\t" m[4] > ( FILENAME ".rates" )
+	}
+	if (match(LINE, /^\(SLOW\)/, m)) {
+		return
+	}
+	print LINE
+	
+}
+
+function parsePackedLine(LINE     ,m) {
+	if (match(LINE, /^([^\r\n]*)[\r\n]+(.*)$/, m)) {
+		do {
+			LINE=m[2]
+			if (m[1] != "") {
+				parsePackedLine(m[1])
+			}
+		} while (match(LINE, /^([^\r\n]+)[\r\n]+(.*)$/, m));
+	}
+	parseLine(LINE)
+}
+
+BEGIN {
+	print "BEGIN"
+}
+
+{
+	parsePackedLine($0)
+}
+
+END {
+	print "END"
+}
