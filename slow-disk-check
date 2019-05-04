@@ -112,12 +112,11 @@ function updateAndCheckRate(INFO     ,FLAG) {
 function testDeviceBinary(STARTMB, ENDMB, READSIZE     ,ADDR,RET,INFO,FLAG) {
 	# we know the exact middle is slow, but we want to break that down
 	ADDR=int((STARTMB+ENDMB) / 2)
-	printf "\r(B) %d-%d -> %d \n", STARTMB, ENDMB, ADDR
 	if (ADDR == STARTMB) {
 		return ENDMB;
 	}
 	RET=testDeviceAt(ADDR, READSIZE, INFO)
-	printf "\r(BS) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s \n", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+	printf "\r(SLOW) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s\033[0K", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
 	FLAG=updateAndCheckRate(INFO)
 	if (FLAG != 0) {
 		return testDeviceBinary(STARTMB, ADDR, READSIZE)
@@ -128,10 +127,6 @@ function testDeviceBinary(STARTMB, ENDMB, READSIZE     ,ADDR,RET,INFO,FLAG) {
 
 function testDeviceFindSlowEnd(STARTMB, ENDMB, READSIZE     ,SKIP,ADDR,RET,INFO,INFOLAST,FLAG) {
 	# we know the exact middle is slow, but we want to break that down
-	print "testDeviceFindSlowEnd not yet implemented"
-	
-	printf "(E) %d-%d\n", STARTMB, ENDMB
-	
 	SKIP=1
 	ADDR=STARTMB
 	
@@ -142,7 +137,7 @@ function testDeviceFindSlowEnd(STARTMB, ENDMB, READSIZE     ,SKIP,ADDR,RET,INFO,
 			ADDR=ENDMB
 		}
 		RET=testDeviceAt(ADDR, READSIZE, INFO)
-		printf "\r(LS) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s \n", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+		printf "\r(SLOW) %7d MB: %d ms = %d MB/s, avg=%d MB/s: %s\033[0K", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
 		FLAG=updateAndCheckRate(INFO)
 		SKIP *= 2
 		if (SKIP > FASTSTEP) {
@@ -150,28 +145,22 @@ function testDeviceFindSlowEnd(STARTMB, ENDMB, READSIZE     ,SKIP,ADDR,RET,INFO,
 		}
 	} while (FLAG != 0 && ADDR < ENDMB)
 	
-	printf "\r(LSOK) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s \n", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+	printf "\r(SLOW) %7d MB: %d ms = %d MB/s, avg=%d MB/s: %s\033[0K", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
 	
-	ENDMB=ADDR
+	if (ADDR < ENDMB) {
+		ENDMB=ADDR
+	}
 	
 	# now we subdivide that to ensure we have the actual end
 	ADDR=int((STARTMB+ENDMB) / 2)
 	if (ADDR == STARTMB) {
 		return ADDR;
 	}
-	RET=testDeviceAt(ADDR, READSIZE, INFO)
-	printf "\r(BSE) %7d MB: %d ms = %d MB/, avg=%d MB/s: %s \n", ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
-	FLAG=updateAndCheckRate(INFO)
-	if (FLAG != 0) {
 		return testDeviceFindSlowEnd(ADDR, ENDMB, READSIZE)
-	} else {
-		printf "(BR-F) %d-%d\n", STARTMB, ADDR
-		return testDeviceFindSlowEnd(STARTMB, ADDR, READSIZE)
-	}
 }
 
-function retestDeviceAt(ADDR, READSIZE, ENDMB     ,INFO,RET,FLAG) {
-	printf "\r!!! slow read detected; retrying in 2 seconds... "
+function retestDeviceAt(ADDR, READSIZE, ENDMB,INFO     ,RET,FLAG) {
+	printf "; retrying in 2 seconds...\033[0K"
 	sleep(2)
 	RET=testDeviceAt(ADDR, READSIZE, INFO)
 	FLAG=updateAndCheckRate(INFO)
@@ -186,25 +175,20 @@ function testDeviceLinear(STARTMB, ENDMB     ,ADDR,READSIZE,RET,INFO,SLOWSTARTMB
 	READSIZE=1
 	for(ADDR=STARTMB; ADDR<=ENDMB; ) {
 		RET=testDeviceAt(ADDR, READSIZE, INFO)
-		printf "\r(%2d%%) %7d MB: %d ms = %d MB/s, avg=%d MB/s: %s ", (100 * ADDR / ENDMB), ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
+		printf "\r(%3d%%) %7d MB: %d ms = %d MB/s, avg=%d MB/s: %s\033[0K", (100 * ADDR / ENDMB), ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
 		FLAG=updateAvgRate(INFO["rate"])
 		if (FLAG != 0 || INFO["elapsed"] > TIMEOUT) {
-			FLAG=retestDeviceAt(ADDR, READSIZE, ENDMB)
+			FLAG=retestDeviceAt(ADDR, READSIZE, ENDMB, INFO)
 			if (FLAG == 1) {
-				printf "\n!!! slow read detected; switching to binary search\n"
+				printf "\r(%3d%%) %7d MB: %d ms = %d MB/s, avg=%d MB/s: %s; performing binary search...\033[0K\n", (100 * ADDR / ENDMB), ADDR, (INFO["elapsed"] * 1000), INFO["rate"], AVGRATE, RET
 				SLOWSTARTMB=testDeviceBinary((ADDR-FASTSTEP), ADDR, READSIZE)
-				printf "\r(%2d%%) SLOW STARTING AT: %d MB \n", (100 * ADDR / ENDMB), SLOWSTARTMB
-				
 				SLOWENDMB=testDeviceFindSlowEnd(SLOWSTARTMB, ENDMB, READSIZE)
-				printf "\r(%2d%%) SLOW ENDING AT: %d MB \n", (100 * ADDR / ENDMB), SLOWENDMB
 				
 				if (SLOWSTARTMB == SLOWENDMB) {
-					printf "\n(%2d%%) SLOW: at %d MB \n", (100 * ADDR / ENDMB), SLOWSTARTMB
+					printf "\n(%3d%%) SLOW: %d MB (1MB)\033[0K\n", (100 * ADDR / ENDMB), SLOWSTARTMB
 					ADDR += 1
 				} else {
-					printf "\r(%2d%%) SLOW FROM: %d MB to %d MB \n", (100 * ADDR / ENDMB), SLOWSTARTMB, SLOWENDMB
-					print "DEBUG: Sleeping for 10 seconds..."
-					sleep(10)
+					printf "\r(%3d%%) SLOW: %d MB - %d MB (%d MB)\033[0K\n", (100 * ADDR / ENDMB), SLOWSTARTMB, SLOWENDMB, (1 + SLOWENDMB - SLOWSTARTMB)
 					ADDR = SLOWENDMB + 1
 				}
 			}
