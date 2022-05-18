@@ -1,6 +1,6 @@
 #!/bin/sh
 # polyglot for gawk version detection
-true + /; gawk --version | grep "GNU Awk" | egrep -q "GNU Awk [^,]+, API: (1\.[1-9]|2\.)"; if [ "$?" -ne 0 ]; then echo "Unsupported gawk version; Requires API 1.1+" && exit 1; fi ; false / {}
+true + /; gawk --version | grep "GNU Awk" | egrep -q "GNU Awk [^,]+, API: (1\.[1-9]|[2-9][0-9]*\.|1[0-9]+\.)"; if [ "$?" -ne 0 ]; then echo "Unsupported gawk version; Requires API 1.1+" && exit 1; fi ; false / {}
 true + /; exec -a $(basename "$0") gawk -f "$0" -- "$@"; exit 1; / {}
 # awk script starts here
 
